@@ -1,0 +1,222 @@
+From 8163359fe27eb52a17efff4860be2a4923853b14 Mon Sep 17 00:00:00 2001
+From: Constantin Konstantinidis <constantinkonstantinidis@gmail.com>
+Date: Thu, 7 Jan 2021 22:17:37 +0100
+Subject: [PATCH] cmd/go: allow go fmt to complete with missing embedded file
+
+Fixes #43273
+
+Change-Id: I75fe2e608cb43c048e3c2a22fe7fbb6eb779504a
+---
+ src/cmd/go/internal/fmtcmd/fmt.go        |  3 +-
+ src/cmd/go/internal/load/pkg.go          | 65 ++++++++++++++++++++----
+ src/cmd/go/testdata/script/embed.txt     |  6 +--
+ src/cmd/go/testdata/script/embed_fmt.txt | 24 +++++++++
+ 4 files changed, 85 insertions(+), 13 deletions(-)
+ create mode 100644 src/cmd/go/testdata/script/embed_fmt.txt
+
+diff --git a/src/cmd/go/internal/fmtcmd/fmt.go b/src/cmd/go/internal/fmtcmd/fmt.go
+index b0c1c59b40..950011a926 100644
+--- a/src/cmd/go/internal/fmtcmd/fmt.go
++++ b/src/cmd/go/internal/fmtcmd/fmt.go
+@@ -75,7 +75,8 @@ func runFmt(ctx context.Context, cmd *base.Command, args []string) {
+ 		}
+ 		if pkg.Error != nil {
+ 			var nogo *load.NoGoError
+-			if errors.As(pkg.Error, &nogo) && len(pkg.InternalAllGoFiles()) > 0 {
++			var noembed *load.EmbedError
++			if (errors.As(pkg.Error, &nogo) && len(pkg.InternalAllGoFiles()) > 0) || errors.As(pkg.Error, &noembed) {
+ 				// Skip this error, as we will format
+ 				// all files regardless.
+ 			} else {
+diff --git a/src/cmd/go/internal/load/pkg.go b/src/cmd/go/internal/load/pkg.go
+index 855f9698a2..b4ab88e00c 100644
+--- a/src/cmd/go/internal/load/pkg.go
++++ b/src/cmd/go/internal/load/pkg.go
+@@ -6,6 +6,7 @@
+ package load
+ 
+ import (
++	"bufio"
+ 	"bytes"
+ 	"context"
+ 	"encoding/json"
+@@ -234,6 +235,53 @@ func (e *NoGoError) Error() string {
+ 	return "no Go files in " + e.Package.Dir
+ }
+ 
++// A EmbedError indicates that the file of the embed directive was not found.
++type EmbedError struct {
++	Pattern string
++	Message string
++}
++
++func (e *EmbedError) Error() string {
++	return fmt.Sprintf("pattern %s: %s", e.Pattern, e.Message)
++}
++
++func embedErrorf(p *Package, pattern, format string, args ...interface{}) error {
++	l, pos := findEmbedError(p, pattern)
++	return &EmbedError{Pattern: pattern+fmt.Sprintf(":%d:%d", l, pos), Message: fmt.Sprintf(format, args...)}
++}
++
++func findEmbedError(p *Package, pattern string) (line int, pos int) {
++	for _, fs := range p.GoFiles {
++		line = 1
++		pos = 0
++		f, err := os.Open(fs)
++		if err != nil {
++			fmt.Errorf("%v", err)
++			continue
++		}
++		scanner := bufio.NewScanner(f)
++
++		for scanner.Scan() {
++			if strings.Contains(scanner.Text(), "//go:embed") {
++				if pos = strings.Index(scanner.Text(), pattern); pos > 0 {
++					break
++				}
++			}
++			line++
++		}
++		f.Close()
++
++		if err := scanner.Err(); err != nil {
++			fmt.Errorf("%v", err)
++			continue
++		}
++		if pos > 0 {
++			break
++		}
++	}
++	return
++}
++
+ // setLoadPackageDataError presents an error found when loading package data
+ // as a *PackageError. It has special cases for some common errors to improve
+ // messages shown to users and reduce redundancy.
+@@ -1920,7 +1968,6 @@ func (p *Package) ResolveEmbed(patterns []string) []string {
+ // It sets files to the list of unique files matched (for go list),
+ // and it sets pmap to the more precise mapping from
+ // patterns to files.
+-// TODO(rsc): All these messages need position information for better error reports.
+ func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[string][]string, err error) {
+ 	pmap = make(map[string][]string)
+ 	have := make(map[string]int)
+@@ -1931,7 +1978,7 @@ func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[stri
+ 
+ 		// Check pattern is valid for //go:embed.
+ 		if _, err := path.Match(pattern, ""); err != nil || !validEmbedPattern(pattern) {
+-			return nil, nil, fmt.Errorf("pattern %s: invalid pattern syntax", pattern)
++			return nil, nil, embedErrorf(p, pattern, "invalid pattern syntax")
+ 		}
+ 
+ 		// Glob to find matches.
+@@ -1961,26 +2008,26 @@ func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[stri
+ 			// (do not contain a go.mod).
+ 			for dir := file; len(dir) > len(p.Dir)+1 && !dirOK[dir]; dir = filepath.Dir(dir) {
+ 				if _, err := fsys.Stat(filepath.Join(dir, "go.mod")); err == nil {
+-					return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: in different module", pattern, what, rel)
++					return nil, nil, embedErrorf(p, pattern, "cannot embed %s %s: in different module", what, rel)
+ 				}
+ 				if dir != file {
+ 					if info, err := fsys.Lstat(dir); err == nil && !info.IsDir() {
+-						return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: in non-directory %s", pattern, what, rel, dir[len(p.Dir)+1:])
++						return nil, nil, embedErrorf(p, pattern,"cannot embed %s %s: in non-directory %s", what, rel, dir[len(p.Dir)+1:])
+ 					}
+ 				}
+ 				dirOK[dir] = true
+ 				if elem := filepath.Base(dir); isBadEmbedName(elem) {
+ 					if dir == file {
+-						return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: invalid name %s", pattern, what, rel, elem)
++						return nil, nil, embedErrorf(p, pattern,"cannot embed %s %s: invalid name %s", what, rel, elem)
+ 					} else {
+-						return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: in invalid directory %s", pattern, what, rel, elem)
++						return nil, nil, embedErrorf(p, pattern, "cannot embed %s %s: in invalid directory %s", what, rel, elem)
+ 					}
+ 				}
+ 			}
+ 
+ 			switch {
+ 			default:
+-				return nil, nil, fmt.Errorf("pattern %s: cannot embed irregular file %s", pattern, rel)
++				return nil, nil, embedErrorf(p, pattern, "cannot embed irregular file %s", rel)
+ 
+ 			case info.Mode().IsRegular():
+ 				if have[rel] != pid {
+@@ -2027,13 +2074,13 @@ func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[stri
+ 					return nil, nil, err
+ 				}
+ 				if count == 0 {
+-					return nil, nil, fmt.Errorf("pattern %s: cannot embed directory %s: contains no embeddable files", pattern, rel)
++					return nil, nil, embedErrorf(p, pattern,"cannot embed directory %s: contains no embeddable files", rel)
+ 				}
+ 			}
+ 		}
+ 
+ 		if len(list) == 0 {
+-			return nil, nil, fmt.Errorf("pattern %s: no matching files found", pattern)
++			return nil, nil, embedErrorf(p, pattern, "embedded file not found in %v", p.Dir)
+ 		}
+ 		sort.Strings(list)
+ 		pmap[pattern] = list
+diff --git a/src/cmd/go/testdata/script/embed.txt b/src/cmd/go/testdata/script/embed.txt
+index 7e9a548661..e82174239c 100644
+--- a/src/cmd/go/testdata/script/embed.txt
++++ b/src/cmd/go/testdata/script/embed.txt
+@@ -20,7 +20,7 @@ cp x.go2 x.go
+ go build -x
+ cp x.txt .git
+ ! go build -x
+-stderr 'pattern [*]t: cannot embed file [.]git'
++stderr 'pattern [*]t:5:11: cannot embed file [.]git'
+ rm .git
+ 
+ # build rejects symlinks
+@@ -32,12 +32,12 @@ rm .git
+ # build rejects empty directories
+ mkdir t
+ ! go build -x
+-stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
++stderr 'pattern [*]t:5:11: cannot embed directory t: contains no embeddable files'
+ 
+ # build ignores symlinks and invalid names in directories
+ cp x.txt t/.git
+ ! go build -x
+-stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
++stderr 'pattern [*]t:5:11: cannot embed directory t: contains no embeddable files'
+ [symlink] symlink t/x.link -> ../x.txt
+ [symlink] ! go build -x
+ [symlink] stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
+diff --git a/src/cmd/go/testdata/script/embed_fmt.txt b/src/cmd/go/testdata/script/embed_fmt.txt
+new file mode 100644
+index 0000000000..ff9a60277d
+--- /dev/null
++++ b/src/cmd/go/testdata/script/embed_fmt.txt
+@@ -0,0 +1,24 @@
++# go fmt ignores file not found
++go fmt xnofmt.go
++cmp xfmt.go xnofmt.go
++! go build xnofmt.go
++stderr 'pattern x\.txt\:5:11: embedded file not found in \$WORK[/\\]gopath[/\\]src'
++
++-- xfmt.go --
++package p
++
++import "embed"
++
++//go:embed x.txt
++var X embed.FS
++-- xnofmt.go --
++package p
++
++import "embed"
++
++//go:embed x.txt
++var X  embed.FS
++
++-- go.mod --
++module m
++
+-- 
+2.28.0.windows.1
+
