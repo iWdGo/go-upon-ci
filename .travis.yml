@@ -1,0 +1,46 @@
+language: go
+
+arch: amd64
+
+os:
+  - windows
+  - linux
+
+go: 1.11.x
+
+env:
+  - GO111MODULE=auto
+
+install:
+  - export GITROOT=$(pwd)
+
+before_script:
+  - export GOROOT_BOOTSTRAP=$(go env GOROOT)
+  - mkdir golang
+  - cd golang
+  - git clone --branch master --single-branch --no-tags https://github.com/golang/go.git
+  - cd go
+  - export GOCLONE=$(pwd)
+  - git log -1 --pretty=short # on tip
+  - cd $TRAVIS_BUILD_DIR
+  - export COMMIT_TITLE=$(basename -s .patch *.patch)
+  - mv *.patch $GOCLONE
+  - cd $GOCLONE
+  - git apply -v --ignore-space-change --ignore-whitespace --whitespace=fix *.patch
+  - rm *.patch
+  # git has no global config on Travis CI. No '/home/travis/.gitconfig'
+  - git config user.email "constantinkonstantinidis@gmail.com"
+  - git config user.name "Constantin Konstantinidis"
+  - git add -A
+  - git commit -m "$COMMIT_TITLE"
+
+script:
+  - cd src
+  - sh ./make.bash
+
+after_success:
+  - rm -f ./cmd/dist/dist
+  - export GOROOT=
+  - cd $GOCLONE
+  - ./bin/go tool dist version
+  - ./bin/go tool dist test
