@@ -1,17 +1,21 @@
-From c87801c7606c5e37ec4329df6f4bb928fd81e684 Mon Sep 17 00:00:00 2001
+From da85c0d5f33f4e44126d0d8097ca026cfd461c2c Mon Sep 17 00:00:00 2001
 From: Constantin Konstantinidis <constantinkonstantinidis@gmail.com>
 Date: Thu, 7 Jan 2021 22:17:37 +0100
-Subject: [PATCH] cmd/go: allow go fmt to complete with missing embedded file
+Subject: [PATCH] cmd/go: allow go fmt to complete when embedded file is
+ missing
+
+add position of failing pattern.
 
 Fixes #43273
+Fixes #43469
 
 Change-Id: I75fe2e608cb43c048e3c2a22fe7fbb6eb779504a
 ---
  src/cmd/go/internal/fmtcmd/fmt.go        |  3 +-
  src/cmd/go/internal/load/pkg.go          | 65 ++++++++++++++++++++----
- src/cmd/go/testdata/script/embed.txt     |  8 +--
+ src/cmd/go/testdata/script/embed.txt     | 10 ++--
  src/cmd/go/testdata/script/embed_fmt.txt | 24 +++++++++
- 4 files changed, 86 insertions(+), 14 deletions(-)
+ 4 files changed, 87 insertions(+), 15 deletions(-)
  create mode 100644 src/cmd/go/testdata/script/embed_fmt.txt
 
 diff --git a/src/cmd/go/internal/fmtcmd/fmt.go b/src/cmd/go/internal/fmtcmd/fmt.go
@@ -160,10 +164,10 @@ index 855f9698a2..b4ab88e00c 100644
  		sort.Strings(list)
  		pmap[pattern] = list
 diff --git a/src/cmd/go/testdata/script/embed.txt b/src/cmd/go/testdata/script/embed.txt
-index 7e9a548661..ffde690391 100644
+index 7e9a548661..f7de4a62c2 100644
 --- a/src/cmd/go/testdata/script/embed.txt
 +++ b/src/cmd/go/testdata/script/embed.txt
-@@ -20,24 +20,24 @@ cp x.go2 x.go
+@@ -20,27 +20,27 @@ cp x.go2 x.go
  go build -x
  cp x.txt .git
  ! go build -x
@@ -191,7 +195,11 @@ index 7e9a548661..ffde690391 100644
 +stderr 'pattern [*]t:5:11: cannot embed directory t: contains no embeddable files'
  [symlink] symlink t/x.link -> ../x.txt
  [symlink] ! go build -x
- [symlink] stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
+-[symlink] stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
++[symlink] stderr 'pattern [*]t:5:11: cannot embed directory t: contains no embeddable files'
+ 
+ cp x.txt t/x.txt
+ go build -x
 diff --git a/src/cmd/go/testdata/script/embed_fmt.txt b/src/cmd/go/testdata/script/embed_fmt.txt
 new file mode 100644
 index 0000000000..ff9a60277d
