@@ -1,4 +1,4 @@
-From da85c0d5f33f4e44126d0d8097ca026cfd461c2c Mon Sep 17 00:00:00 2001
+From a8916342c191c942d9acbe08a6d486b2821a566b Mon Sep 17 00:00:00 2001
 From: Constantin Konstantinidis <constantinkonstantinidis@gmail.com>
 Date: Thu, 7 Jan 2021 22:17:37 +0100
 Subject: [PATCH] cmd/go: allow go fmt to complete when embedded file is
@@ -33,7 +33,7 @@ index b0c1c59b40..950011a926 100644
  				// all files regardless.
  			} else {
 diff --git a/src/cmd/go/internal/load/pkg.go b/src/cmd/go/internal/load/pkg.go
-index 855f9698a2..b4ab88e00c 100644
+index 855f9698a2..be68f3331c 100644
 --- a/src/cmd/go/internal/load/pkg.go
 +++ b/src/cmd/go/internal/load/pkg.go
 @@ -6,6 +6,7 @@
@@ -69,7 +69,7 @@ index 855f9698a2..b4ab88e00c 100644
 +		pos = 0
 +		f, err := os.Open(fs)
 +		if err != nil {
-+			fmt.Errorf("%v", err)
++			_ = fmt.Errorf("%v", err)
 +			continue
 +		}
 +		scanner := bufio.NewScanner(f)
@@ -85,7 +85,7 @@ index 855f9698a2..b4ab88e00c 100644
 +		f.Close()
 +
 +		if err := scanner.Err(); err != nil {
-+			fmt.Errorf("%v", err)
++			_ = fmt.Errorf("%v", err)
 +			continue
 +		}
 +		if pos > 0 {
