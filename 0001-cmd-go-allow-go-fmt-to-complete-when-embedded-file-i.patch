@@ -1,25 +1,38 @@
-From a8916342c191c942d9acbe08a6d486b2821a566b Mon Sep 17 00:00:00 2001
+From df6953d07583c71974fddd9d281be02c1ff2a1c7 Mon Sep 17 00:00:00 2001
 From: Constantin Konstantinidis <constantinkonstantinidis@gmail.com>
-Date: Thu, 7 Jan 2021 22:17:37 +0100
+Date: Fri, 15 Jan 2021 17:05:29 +0100
 Subject: [PATCH] cmd/go: allow go fmt to complete when embedded file is
  missing
 
-add position of failing pattern.
+Add build flag -e to ignore embed errors.
+When use, no error is reported.
 
 Fixes #43273
-Fixes #43469
 
 Change-Id: I75fe2e608cb43c048e3c2a22fe7fbb6eb779504a
 ---
- src/cmd/go/internal/fmtcmd/fmt.go        |  3 +-
- src/cmd/go/internal/load/pkg.go          | 65 ++++++++++++++++++++----
- src/cmd/go/testdata/script/embed.txt     | 10 ++--
- src/cmd/go/testdata/script/embed_fmt.txt | 24 +++++++++
- 4 files changed, 87 insertions(+), 15 deletions(-)
+ src/cmd/go/internal/cfg/cfg.go           |  1 +
+ src/cmd/go/internal/fmtcmd/fmt.go        |  3 ++-
+ src/cmd/go/internal/load/pkg.go          |  2 +-
+ src/cmd/go/internal/work/build.go        |  3 +++
+ src/cmd/go/testdata/script/embed_fmt.txt | 31 ++++++++++++++++++++++++
+ 5 files changed, 38 insertions(+), 2 deletions(-)
  create mode 100644 src/cmd/go/testdata/script/embed_fmt.txt
 
+diff --git a/src/cmd/go/internal/cfg/cfg.go b/src/cmd/go/internal/cfg/cfg.go
+index c48904eacc..850341bd63 100644
+--- a/src/cmd/go/internal/cfg/cfg.go
++++ b/src/cmd/go/internal/cfg/cfg.go
+@@ -28,6 +28,7 @@ var (
+ 	BuildA                 bool   // -a flag
+ 	BuildBuildmode         string // -buildmode flag
+ 	BuildContext           = defaultContext()
++	BuildE                 bool               // -e flag
+ 	BuildMod               string             // -mod flag
+ 	BuildModExplicit       bool               // whether -mod was set explicitly
+ 	BuildModReason         string             // reason -mod was set, if set by default
 diff --git a/src/cmd/go/internal/fmtcmd/fmt.go b/src/cmd/go/internal/fmtcmd/fmt.go
-index b0c1c59b40..950011a926 100644
+index b0c1c59b40..6b98f0ccd3 100644
 --- a/src/cmd/go/internal/fmtcmd/fmt.go
 +++ b/src/cmd/go/internal/fmtcmd/fmt.go
 @@ -75,7 +75,8 @@ func runFmt(ctx context.Context, cmd *base.Command, args []string) {
@@ -27,209 +40,82 @@ index b0c1c59b40..950011a926 100644
  		if pkg.Error != nil {
  			var nogo *load.NoGoError
 -			if errors.As(pkg.Error, &nogo) && len(pkg.InternalAllGoFiles()) > 0 {
-+			var noembed *load.EmbedError
-+			if (errors.As(pkg.Error, &nogo) && len(pkg.InternalAllGoFiles()) > 0) || errors.As(pkg.Error, &noembed) {
++			var embed *load.EmbedError
++			if (errors.As(pkg.Error, &nogo) || errors.As(pkg.Error, &embed)) && len(pkg.InternalAllGoFiles()) > 0 {
  				// Skip this error, as we will format
  				// all files regardless.
  			} else {
 diff --git a/src/cmd/go/internal/load/pkg.go b/src/cmd/go/internal/load/pkg.go
-index 855f9698a2..be68f3331c 100644
+index a1be074f6a..999dfc99fd 100644
 --- a/src/cmd/go/internal/load/pkg.go
 +++ b/src/cmd/go/internal/load/pkg.go
-@@ -6,6 +6,7 @@
- package load
+@@ -1808,7 +1808,7 @@ func (p *Package) load(ctx context.Context, path string, stk *ImportStack, impor
+ 	defer stk.Pop()
  
- import (
-+	"bufio"
- 	"bytes"
- 	"context"
- 	"encoding/json"
-@@ -234,6 +235,53 @@ func (e *NoGoError) Error() string {
- 	return "no Go files in " + e.Package.Dir
- }
+ 	p.EmbedFiles, p.Internal.Embed, err = p.resolveEmbed(p.EmbedPatterns)
+-	if err != nil {
++	if err != nil && !cfg.BuildE {
+ 		setError(err)
+ 		embedErr := err.(*EmbedError)
+ 		p.Error.setPos(p.Internal.Build.EmbedPatternPos[embedErr.Pattern])
+diff --git a/src/cmd/go/internal/work/build.go b/src/cmd/go/internal/work/build.go
+index 873d85de4e..f2685ccf2c 100644
+--- a/src/cmd/go/internal/work/build.go
++++ b/src/cmd/go/internal/work/build.go
+@@ -66,6 +66,8 @@ and test commands:
  
-+// A EmbedError indicates that the file of the embed directive was not found.
-+type EmbedError struct {
-+	Pattern string
-+	Message string
-+}
-+
-+func (e *EmbedError) Error() string {
-+	return fmt.Sprintf("pattern %s: %s", e.Pattern, e.Message)
-+}
-+
-+func embedErrorf(p *Package, pattern, format string, args ...interface{}) error {
-+	l, pos := findEmbedError(p, pattern)
-+	return &EmbedError{Pattern: pattern+fmt.Sprintf(":%d:%d", l, pos), Message: fmt.Sprintf(format, args...)}
-+}
-+
-+func findEmbedError(p *Package, pattern string) (line int, pos int) {
-+	for _, fs := range p.GoFiles {
-+		line = 1
-+		pos = 0
-+		f, err := os.Open(fs)
-+		if err != nil {
-+			_ = fmt.Errorf("%v", err)
-+			continue
-+		}
-+		scanner := bufio.NewScanner(f)
-+
-+		for scanner.Scan() {
-+			if strings.Contains(scanner.Text(), "//go:embed") {
-+				if pos = strings.Index(scanner.Text(), pattern); pos > 0 {
-+					break
-+				}
-+			}
-+			line++
-+		}
-+		f.Close()
-+
-+		if err := scanner.Err(); err != nil {
-+			_ = fmt.Errorf("%v", err)
-+			continue
-+		}
-+		if pos > 0 {
-+			break
-+		}
-+	}
-+	return
-+}
-+
- // setLoadPackageDataError presents an error found when loading package data
- // as a *PackageError. It has special cases for some common errors to improve
- // messages shown to users and reduce redundancy.
-@@ -1920,7 +1968,6 @@ func (p *Package) ResolveEmbed(patterns []string) []string {
- // It sets files to the list of unique files matched (for go list),
- // and it sets pmap to the more precise mapping from
- // patterns to files.
--// TODO(rsc): All these messages need position information for better error reports.
- func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[string][]string, err error) {
- 	pmap = make(map[string][]string)
- 	have := make(map[string]int)
-@@ -1931,7 +1978,7 @@ func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[stri
+ 	-a
+ 		force rebuilding of packages that are already up-to-date.
++	-e
++		ignore errors on embedded files.
+ 	-n
+ 		print the commands but do not run them.
+ 	-p n
+@@ -198,6 +200,7 @@ func init() {
+ 	CmdBuild.Run = runBuild
+ 	CmdInstall.Run = runInstall
  
- 		// Check pattern is valid for //go:embed.
- 		if _, err := path.Match(pattern, ""); err != nil || !validEmbedPattern(pattern) {
--			return nil, nil, fmt.Errorf("pattern %s: invalid pattern syntax", pattern)
-+			return nil, nil, embedErrorf(p, pattern, "invalid pattern syntax")
- 		}
++	CmdBuild.Flag.BoolVar(&cfg.BuildE, "e", false, "")
+ 	CmdBuild.Flag.BoolVar(&cfg.BuildI, "i", false, "")
+ 	CmdBuild.Flag.StringVar(&cfg.BuildO, "o", "", "output file or directory")
  
- 		// Glob to find matches.
-@@ -1961,26 +2008,26 @@ func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[stri
- 			// (do not contain a go.mod).
- 			for dir := file; len(dir) > len(p.Dir)+1 && !dirOK[dir]; dir = filepath.Dir(dir) {
- 				if _, err := fsys.Stat(filepath.Join(dir, "go.mod")); err == nil {
--					return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: in different module", pattern, what, rel)
-+					return nil, nil, embedErrorf(p, pattern, "cannot embed %s %s: in different module", what, rel)
- 				}
- 				if dir != file {
- 					if info, err := fsys.Lstat(dir); err == nil && !info.IsDir() {
--						return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: in non-directory %s", pattern, what, rel, dir[len(p.Dir)+1:])
-+						return nil, nil, embedErrorf(p, pattern,"cannot embed %s %s: in non-directory %s", what, rel, dir[len(p.Dir)+1:])
- 					}
- 				}
- 				dirOK[dir] = true
- 				if elem := filepath.Base(dir); isBadEmbedName(elem) {
- 					if dir == file {
--						return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: invalid name %s", pattern, what, rel, elem)
-+						return nil, nil, embedErrorf(p, pattern,"cannot embed %s %s: invalid name %s", what, rel, elem)
- 					} else {
--						return nil, nil, fmt.Errorf("pattern %s: cannot embed %s %s: in invalid directory %s", pattern, what, rel, elem)
-+						return nil, nil, embedErrorf(p, pattern, "cannot embed %s %s: in invalid directory %s", what, rel, elem)
- 					}
- 				}
- 			}
- 
- 			switch {
- 			default:
--				return nil, nil, fmt.Errorf("pattern %s: cannot embed irregular file %s", pattern, rel)
-+				return nil, nil, embedErrorf(p, pattern, "cannot embed irregular file %s", rel)
- 
- 			case info.Mode().IsRegular():
- 				if have[rel] != pid {
-@@ -2027,13 +2074,13 @@ func (p *Package) resolveEmbed(patterns []string) (files []string, pmap map[stri
- 					return nil, nil, err
- 				}
- 				if count == 0 {
--					return nil, nil, fmt.Errorf("pattern %s: cannot embed directory %s: contains no embeddable files", pattern, rel)
-+					return nil, nil, embedErrorf(p, pattern,"cannot embed directory %s: contains no embeddable files", rel)
- 				}
- 			}
- 		}
- 
- 		if len(list) == 0 {
--			return nil, nil, fmt.Errorf("pattern %s: no matching files found", pattern)
-+			return nil, nil, embedErrorf(p, pattern, "embedded file not found in %v", p.Dir)
- 		}
- 		sort.Strings(list)
- 		pmap[pattern] = list
-diff --git a/src/cmd/go/testdata/script/embed.txt b/src/cmd/go/testdata/script/embed.txt
-index 7e9a548661..f7de4a62c2 100644
---- a/src/cmd/go/testdata/script/embed.txt
-+++ b/src/cmd/go/testdata/script/embed.txt
-@@ -20,27 +20,27 @@ cp x.go2 x.go
- go build -x
- cp x.txt .git
- ! go build -x
--stderr 'pattern [*]t: cannot embed file [.]git'
-+stderr 'pattern [*]t:5:11: cannot embed file [.]git'
- rm .git
- 
- # build rejects symlinks
- [symlink] symlink x.tzt -> x.txt
- [symlink] ! go build -x
--[symlink] stderr 'pattern [*]t: cannot embed irregular file x.tzt'
-+[symlink] stderr 'pattern [*]t:5:11: cannot embed irregular file x.tzt'
- [symlink] rm x.tzt
- 
- # build rejects empty directories
- mkdir t
- ! go build -x
--stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
-+stderr 'pattern [*]t:5:11: cannot embed directory t: contains no embeddable files'
- 
- # build ignores symlinks and invalid names in directories
- cp x.txt t/.git
- ! go build -x
--stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
-+stderr 'pattern [*]t:5:11: cannot embed directory t: contains no embeddable files'
- [symlink] symlink t/x.link -> ../x.txt
- [symlink] ! go build -x
--[symlink] stderr 'pattern [*]t: cannot embed directory t: contains no embeddable files'
-+[symlink] stderr 'pattern [*]t:5:11: cannot embed directory t: contains no embeddable files'
- 
- cp x.txt t/x.txt
- go build -x
 diff --git a/src/cmd/go/testdata/script/embed_fmt.txt b/src/cmd/go/testdata/script/embed_fmt.txt
 new file mode 100644
-index 0000000000..ff9a60277d
+index 0000000000..aff19b5dff
 --- /dev/null
 +++ b/src/cmd/go/testdata/script/embed_fmt.txt
-@@ -0,0 +1,24 @@
+@@ -0,0 +1,31 @@
 +# go fmt ignores file not found
 +go fmt xnofmt.go
-+cmp xfmt.go xnofmt.go
++cmp xnofmt.go xfmt.ref
++# go build tolerates a missing embedded file
 +! go build xnofmt.go
-+stderr 'pattern x\.txt\:5:11: embedded file not found in \$WORK[/\\]gopath[/\\]src'
++stderr 'xnofmt.go:5:12: pattern missing.txt: no matching files found'
++# go build -e ignores errors on embed patterns
++! go build -e xnofmt.go
++stderr 'invalid go:embed: build system did not supply embed configuration'
++# go list shows patterns and files
++! go list -f '{{.EmbedPatterns}}'
++stderr 'xnofmt.go:5:12: pattern missing.txt: no matching files found'
++# go list -e ignores errors on embed patterns
++go list -e
 +
-+-- xfmt.go --
-+package p
-+
-+import "embed"
-+
-+//go:embed x.txt
-+var X embed.FS
 +-- xnofmt.go --
 +package p
 +
 +import "embed"
 +
-+//go:embed x.txt
++//go:embed missing.txt
 +var X  embed.FS
++-- xfmt.ref --
++package p
 +
++import "embed"
++
++//go:embed missing.txt
++var X embed.FS
 +-- go.mod --
 +module m
-+
 -- 
 2.28.0.windows.1
 
