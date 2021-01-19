@@ -1,36 +1,18 @@
-From df6953d07583c71974fddd9d281be02c1ff2a1c7 Mon Sep 17 00:00:00 2001
+From 7f8b7459d1681883dbe9ac7fd3435e090ec9946b Mon Sep 17 00:00:00 2001
 From: Constantin Konstantinidis <constantinkonstantinidis@gmail.com>
 Date: Fri, 15 Jan 2021 17:05:29 +0100
 Subject: [PATCH] cmd/go: allow go fmt to complete when embedded file is
  missing
 
-Add build flag -e to ignore embed errors.
-When use, no error is reported.
-
 Fixes #43273
 
 Change-Id: I75fe2e608cb43c048e3c2a22fe7fbb6eb779504a
 ---
- src/cmd/go/internal/cfg/cfg.go           |  1 +
  src/cmd/go/internal/fmtcmd/fmt.go        |  3 ++-
- src/cmd/go/internal/load/pkg.go          |  2 +-
- src/cmd/go/internal/work/build.go        |  3 +++
- src/cmd/go/testdata/script/embed_fmt.txt | 31 ++++++++++++++++++++++++
- 5 files changed, 38 insertions(+), 2 deletions(-)
+ src/cmd/go/testdata/script/embed_fmt.txt | 22 ++++++++++++++++++++++
+ 2 files changed, 24 insertions(+), 1 deletion(-)
  create mode 100644 src/cmd/go/testdata/script/embed_fmt.txt
 
-diff --git a/src/cmd/go/internal/cfg/cfg.go b/src/cmd/go/internal/cfg/cfg.go
-index c48904eacc..850341bd63 100644
---- a/src/cmd/go/internal/cfg/cfg.go
-+++ b/src/cmd/go/internal/cfg/cfg.go
-@@ -28,6 +28,7 @@ var (
- 	BuildA                 bool   // -a flag
- 	BuildBuildmode         string // -buildmode flag
- 	BuildContext           = defaultContext()
-+	BuildE                 bool               // -e flag
- 	BuildMod               string             // -mod flag
- 	BuildModExplicit       bool               // whether -mod was set explicitly
- 	BuildModReason         string             // reason -mod was set, if set by default
 diff --git a/src/cmd/go/internal/fmtcmd/fmt.go b/src/cmd/go/internal/fmtcmd/fmt.go
 index b0c1c59b40..6b98f0ccd3 100644
 --- a/src/cmd/go/internal/fmtcmd/fmt.go
@@ -45,60 +27,17 @@ index b0c1c59b40..6b98f0ccd3 100644
  				// Skip this error, as we will format
  				// all files regardless.
  			} else {
-diff --git a/src/cmd/go/internal/load/pkg.go b/src/cmd/go/internal/load/pkg.go
-index a1be074f6a..999dfc99fd 100644
---- a/src/cmd/go/internal/load/pkg.go
-+++ b/src/cmd/go/internal/load/pkg.go
-@@ -1808,7 +1808,7 @@ func (p *Package) load(ctx context.Context, path string, stk *ImportStack, impor
- 	defer stk.Pop()
- 
- 	p.EmbedFiles, p.Internal.Embed, err = p.resolveEmbed(p.EmbedPatterns)
--	if err != nil {
-+	if err != nil && !cfg.BuildE {
- 		setError(err)
- 		embedErr := err.(*EmbedError)
- 		p.Error.setPos(p.Internal.Build.EmbedPatternPos[embedErr.Pattern])
-diff --git a/src/cmd/go/internal/work/build.go b/src/cmd/go/internal/work/build.go
-index 873d85de4e..f2685ccf2c 100644
---- a/src/cmd/go/internal/work/build.go
-+++ b/src/cmd/go/internal/work/build.go
-@@ -66,6 +66,8 @@ and test commands:
- 
- 	-a
- 		force rebuilding of packages that are already up-to-date.
-+	-e
-+		ignore errors on embedded files.
- 	-n
- 		print the commands but do not run them.
- 	-p n
-@@ -198,6 +200,7 @@ func init() {
- 	CmdBuild.Run = runBuild
- 	CmdInstall.Run = runInstall
- 
-+	CmdBuild.Flag.BoolVar(&cfg.BuildE, "e", false, "")
- 	CmdBuild.Flag.BoolVar(&cfg.BuildI, "i", false, "")
- 	CmdBuild.Flag.StringVar(&cfg.BuildO, "o", "", "output file or directory")
- 
 diff --git a/src/cmd/go/testdata/script/embed_fmt.txt b/src/cmd/go/testdata/script/embed_fmt.txt
 new file mode 100644
-index 0000000000..aff19b5dff
+index 0000000000..8a16afea8a
 --- /dev/null
 +++ b/src/cmd/go/testdata/script/embed_fmt.txt
-@@ -0,0 +1,31 @@
+@@ -0,0 +1,22 @@
 +# go fmt ignores file not found
 +go fmt xnofmt.go
 +cmp xnofmt.go xfmt.ref
-+# go build tolerates a missing embedded file
 +! go build xnofmt.go
 +stderr 'xnofmt.go:5:12: pattern missing.txt: no matching files found'
-+# go build -e ignores errors on embed patterns
-+! go build -e xnofmt.go
-+stderr 'invalid go:embed: build system did not supply embed configuration'
-+# go list shows patterns and files
-+! go list -f '{{.EmbedPatterns}}'
-+stderr 'xnofmt.go:5:12: pattern missing.txt: no matching files found'
-+# go list -e ignores errors on embed patterns
-+go list -e
 +
 +-- xnofmt.go --
 +package p
